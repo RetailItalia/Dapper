@@ -59,6 +59,8 @@ namespace Dapper.Tests.Contrib
                 connection.Execute("CREATE TABLE GenericType (Id nvarchar(100) not null, Name nvarchar(100) not null);");
                 dropTable("NullableDates");
                 connection.Execute("CREATE TABLE NullableDates (Id int IDENTITY(1,1) not null, DateValue DateTime null);");
+                dropTable("Article");
+                connection.Execute("CREATE TABLE Article (Id int IDENTITY(1,1) not null,Code varchar(15), Name nvarchar(100) not null) ");
             }
         }
     }
@@ -107,6 +109,8 @@ namespace Dapper.Tests.Contrib
                     connection.Execute("CREATE TABLE GenericType (Id nvarchar(100) not null, Name nvarchar(100) not null);");
                     dropTable("NullableDates");
                     connection.Execute("CREATE TABLE NullableDates (Id int not null AUTO_INCREMENT PRIMARY KEY, DateValue DateTime);");
+                    dropTable("Article");
+                    connection.Execute("CREATE TABLE Article (Id int not null AUTO_INCREMENT PRIMARY KEY, Code nvarchar(15), Name nvarchar(100)) ");
                 }
             }
             catch (MySqlException e)
@@ -143,7 +147,8 @@ namespace Dapper.Tests.Contrib
                 connection.Execute("CREATE TABLE ObjectY (ObjectYId integer not null, Name nvarchar(100) not null) ");
                 connection.Execute("CREATE TABLE ObjectZ (Id integer not null, Name nvarchar(100) not null) ");
                 connection.Execute("CREATE TABLE GenericType (Id nvarchar(100) not null, Name nvarchar(100) not null) ");
-                connection.Execute("CREATE TABLE NullableDates (Id integer primary key autoincrement not null, DateValue DateTime) ");
+                connection.Execute("CREATE TABLE NullableDates (Id integer primary key autoincrement not null, DateValue DateTime) ");                
+                connection.Execute("CREATE TABLE Article (Id integer primary key autoincrement not null,Code varchar(15), Name nvarchar(100) not null) ");
             }
         }
     }
@@ -176,6 +181,7 @@ namespace Dapper.Tests.Contrib
                 connection.Execute(@"CREATE TABLE ObjectZ (Id int not null, Name nvarchar(100) not null) ");
                 connection.Execute(@"CREATE TABLE GenericType (Id nvarchar(100) not null, Name nvarchar(100) not null) ");
                 connection.Execute(@"CREATE TABLE NullableDates (Id int IDENTITY(1,1) not null, DateValue DateTime null) ");
+                connection.Execute(@"CREATE TABLE Article (Id int IDENTITY(1,1) not null, Code nvarchar(15), Name nvarchar(100)) ");
             }
             Console.WriteLine("Created database");
         }

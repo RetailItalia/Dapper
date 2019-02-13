@@ -14,6 +14,18 @@ using FactAttribute = Dapper.Tests.Contrib.SkippableFactAttribute;
 
 namespace Dapper.Tests.Contrib
 {
+
+    [Table("Article")]
+    public class Article
+    {
+        [Key]
+        public int Id { get; set; }
+        [Key]
+        public string Code { get; set; }
+        public string Name { get; set; }
+    }
+
+
     [Table("ObjectX")]
     public class ObjectX
     {

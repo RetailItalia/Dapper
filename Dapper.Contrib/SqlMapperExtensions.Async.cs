@@ -10,7 +10,7 @@ using Dapper;
 namespace Dapper.Contrib.Extensions
 {
     public static partial class SqlMapperExtensions
-    {
+    {      
         /// <summary>
         /// Returns a single entity by a single id from table "Ts" asynchronously using .NET 4.5 Task. T must be of interface type. 
         /// Id must be marked with [Key] attribute.
@@ -25,17 +25,21 @@ namespace Dapper.Contrib.Extensions
         public static async Task<T> GetAsync<T>(this IDbConnection connection, dynamic id, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
+
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
-                var key = GetSingleKey<T>(nameof(GetAsync));
+                var key = GetKeys<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
-                sql = $"SELECT * FROM {name} WHERE {key.Name} = @id";
+                var pars = key.Select(k => k.Name);
+
+                sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
+
                 GetQueries[type.TypeHandle] = sql;
+                GetParameters[type.TypeHandle] = pars;
             }
 
-            var dynParms = new DynamicParameters();
-            dynParms.Add("@id", id);
+            var dynParms = BuildParametersWhereCondition(type.TypeHandle, id) as DynamicParameters;
 
             if (!type.IsInterface())
                 return (await connection.QueryAsync<T>(sql, dynParms, transaction, commandTimeout).ConfigureAwait(false)).FirstOrDefault();
@@ -313,7 +317,7 @@ namespace Dapper.Contrib.Extensions
             sb.AppendFormat("DELETE FROM {0} WHERE ", name);
 
             var adapter = GetFormatter(connection);
-            
+
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];

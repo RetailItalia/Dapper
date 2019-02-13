@@ -62,6 +62,7 @@ namespace Dapper.Contrib.Extensions
         private static readonly ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<PropertyInfo>> TypeProperties = new ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<PropertyInfo>>();
         private static readonly ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<PropertyInfo>> ComputedProperties = new ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<PropertyInfo>>();
         private static readonly ConcurrentDictionary<RuntimeTypeHandle, string> GetQueries = new ConcurrentDictionary<RuntimeTypeHandle, string>();
+        private static readonly ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<string>> GetParameters = new ConcurrentDictionary<RuntimeTypeHandle, IEnumerable<string>>();
         private static readonly ConcurrentDictionary<RuntimeTypeHandle, string> TypeTableName = new ConcurrentDictionary<RuntimeTypeHandle, string>();
 
         private static readonly ISqlAdapter DefaultAdapter = new SqlServerAdapter();
@@ -159,6 +160,25 @@ namespace Dapper.Contrib.Extensions
 
             return keys.Count > 0 ? keys[0] : explicitKeys[0];
         }
+        private static IEnumerable<PropertyInfo> GetKeys<T>(string method)
+        {
+            var type = typeof(T);
+            var keys = KeyPropertiesCache(type);            
+            var explicitKeys = ExplicitKeyPropertiesCache(type);            
+            var keyCount = keys.Count + explicitKeys.Count;
+           
+            return keys.Count > 0 ? keys : explicitKeys;
+        }
+
+        private static string BuildWhereCondition(IEnumerable<string> pars) =>
+           pars.Count() == 1 ?
+                 $"{pars.First()} = @id" :
+                 pars.Select(p => $"{p} = @{p}").Aggregate((a, b) => $"{a} AND {b}");
+
+        private static DynamicParameters BuildParametersWhereCondition(RuntimeTypeHandle typeHandle, dynamic id) =>
+             (GetParameters.TryGetValue(typeHandle, out IEnumerable<string> parameters) && parameters.Count() > 1) ?
+                new DynamicParameters(id) :
+                new DynamicParameters(new { id });
 
         /// <summary>
         /// Returns a single entity by a single id from table "Ts".  
@@ -178,15 +198,18 @@ namespace Dapper.Contrib.Extensions
 
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
-                var key = GetSingleKey<T>(nameof(Get));
+                var key = GetKeys<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
-                sql = $"select * from {name} where {key.Name} = @id";
+                var pars = key.Select(k => k.Name);
+
+                sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
+
                 GetQueries[type.TypeHandle] = sql;
+                GetParameters[type.TypeHandle] = pars;
             }
 
-            var dynParms = new DynamicParameters();
-            dynParms.Add("@id", id);
+            var dynParms = BuildParametersWhereCondition(type.TypeHandle, id) as DynamicParameters;
 
             T obj;
 
@@ -241,7 +264,7 @@ namespace Dapper.Contrib.Extensions
 
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
-                GetSingleKey<T>(nameof(GetAll));
+                GetKeys<T>(nameof(GetAll));
                 var name = GetTableName(type);
 
                 sql = "select * from " + name;
