@@ -124,19 +124,18 @@ namespace Dapper.Tests.Contrib
                 Assert.Null(o2);
             }
         }
-        
+
         [Fact]
         public async Task InsertGetUpdateDeleteWithCompositeKeyAsync()
         {
             using (var connection = GetOpenConnection())
             {
                 // tests against "Article" table (Table attribute)
-                var id = await connection.ExecuteAsync("INSERT INTO Article(Code,Name) Values ('Pencil','123')");
-
-                await connection.UpdateAsync(new Article { Id = id, Code = "Pencil", Name = "My Pencil" }).ConfigureAwait(false);
-                var car = await connection.GetAsync<Article>(new { Id = id, Code = "Pencil" }).ConfigureAwait(false);
-                Assert.NotNull(car);
-                Assert.Equal("My Pencil", car.Name);
+                var id = await connection.InsertAsync(new Article { Code = "Pencil", Name = "My Pencil" });
+                
+                var article = await connection.GetAsync<Article>(new { Id = id, Code = "Pencil" }).ConfigureAwait(false);
+                Assert.NotNull(article);
+                Assert.Equal("My Pencil", article.Name);
                 Assert.True(await connection.UpdateAsync(new Article { Id = id, Code = "Pencil", Name = "Your Pencil" }).ConfigureAwait(false));
                 Assert.Equal("Your Pencil", (await connection.GetAsync<Article>(new { Id = id, Code = "Pencil" }).ConfigureAwait(false)).Name);
                 Assert.True(await connection.DeleteAsync(new Article { Id = id, Code = "Pencil" }).ConfigureAwait(false));
@@ -158,6 +157,24 @@ namespace Dapper.Tests.Contrib
                 Assert.Equal("SaabAsync", (await connection.GetAsync<Car>(id).ConfigureAwait(false)).Name);
                 Assert.True(await connection.DeleteAsync(new Car { Id = id }).ConfigureAwait(false));
                 Assert.Null(await connection.GetAsync<Car>(id).ConfigureAwait(false));
+            }
+        }
+
+        [Fact]
+        public async Task InsertAllowsToSpecifyValuesForTheKeyAsync()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                await connection.DeleteAllAsync<Article>();
+
+                var article = new Article { Code = "Pencil", Name = "My Pencil" };
+                var id = await connection.InsertAsync(article);
+
+                var addedArticle = await connection.GetAsync<Article>(new { article.Id, article.Code }).ConfigureAwait(false);
+
+                Assert.NotNull(addedArticle);
+                Assert.Equal(article.Code, addedArticle.Code);
+                Assert.Equal(article.Name, addedArticle.Name);          
             }
         }
 
