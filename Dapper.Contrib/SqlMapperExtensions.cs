@@ -8,6 +8,9 @@ using System.Collections.Concurrent;
 using System.Reflection.Emit;
 
 using Dapper;
+using System.Threading.Tasks;
+using System.Dynamic;
+using System.Data.SqlClient;
 
 #if NETSTANDARD1_3
 using DataException = System.InvalidOperationException;
@@ -17,11 +20,70 @@ using System.Threading;
 
 namespace Dapper.Contrib.Extensions
 {
+
+
+    public class NullableDateHandler : SqlMapper.TypeHandler<DateTime?>
+    {
+        public override DateTime? Parse(object value)
+        {
+            return DateTime.Parse(value.ToString());
+        }
+
+
+        public override void SetValue(IDbDataParameter parameter, DateTime? value)
+        {
+            parameter.Value = value?.ToString("yyyy-MM-dd");
+        }
+    }
+    public class DateHandler : SqlMapper.TypeHandler<DateTime>
+    {
+        public override DateTime Parse(object value)
+        {
+            return DateTime.Parse(value.ToString());
+        }
+
+
+        public override void SetValue(IDbDataParameter parameter, DateTime value)
+        {
+            parameter.Value = value.ToString("yyyy-MM-dd");
+        }
+    }
+    public class NullableTimeHandler : SqlMapper.TypeHandler<TimeSpan?>
+    {
+        public override TimeSpan? Parse(object value)
+        {
+            var item = DateTime.Parse(value.ToString());
+            return new TimeSpan(item.Ticks);
+        }
+
+
+        public override void SetValue(IDbDataParameter parameter, TimeSpan? value)
+        {
+            parameter.Value = value?.ToString().Remove(8);
+        }
+    }
+    public class TimeHandler : SqlMapper.TypeHandler<TimeSpan>
+    {
+        public override TimeSpan Parse(object value)
+        {
+            var item = DateTime.Parse(value.ToString());
+            return new TimeSpan(item.Ticks);
+        }
+
+
+        public override void SetValue(IDbDataParameter parameter, TimeSpan value)
+        {
+            parameter.Value = value.ToString().Remove(8);
+        }
+    }
+
     /// <summary>
     /// The Dapper.Contrib extensions for Dapper
     /// </summary>
     public static partial class SqlMapperExtensions
     {
+       
+
         /// <summary>
         /// Defined a proxy object with a possibly dirty state.
         /// </summary>
@@ -74,9 +136,17 @@ namespace Dapper.Contrib.Extensions
                 ["npgsqlconnection"] = new PostgresAdapter(),
                 ["sqliteconnection"] = new SQLiteAdapter(),
                 ["mysqlconnection"] = new MySqlAdapter(),
-                ["fbconnection"] = new FbAdapter()
+                ["fbconnection"] = new FbAdapter(),
+                ["idb2connection"] = new IDB2Adapter()
             };
-
+        private static readonly Dictionary<Type, SqlMapper.ITypeHandler> TypeHandlerDictionary
+            = new Dictionary<Type, SqlMapper.ITypeHandler>
+            {
+                [typeof(DateTime)] = new DateHandler(),
+                [typeof(DateTime?)] = new NullableDateHandler(),
+                [typeof(TimeSpan)] = new TimeHandler(),
+                [typeof(TimeSpan?)] = new NullableTimeHandler()
+            };
         private static List<PropertyInfo> ComputedPropertiesCache(Type type)
         {
             if (ComputedProperties.TryGetValue(type.TypeHandle, out IEnumerable<PropertyInfo> pi))
@@ -125,6 +195,10 @@ namespace Dapper.Contrib.Extensions
             KeyProperties[type.TypeHandle] = keyProperties;
             return keyProperties;
         }
+        private class PropertyInfoByNameComparer : IComparer<PropertyInfo>
+        {
+            public int Compare(PropertyInfo x, PropertyInfo y) => string.CompareOrdinal(x.Name, y.Name);
+        }
 
         private static List<PropertyInfo> TypePropertiesCache(Type type)
         {
@@ -134,6 +208,7 @@ namespace Dapper.Contrib.Extensions
             }
 
             var properties = type.GetProperties().Where(IsWriteable).ToArray();
+            Array.Sort(properties, new PropertyInfoByNameComparer());
             TypeProperties[type.TypeHandle] = properties;
             return properties.ToList();
         }
@@ -163,10 +238,10 @@ namespace Dapper.Contrib.Extensions
         private static IEnumerable<PropertyInfo> GetKeys<T>(string method)
         {
             var type = typeof(T);
-            var keys = KeyPropertiesCache(type);            
-            var explicitKeys = ExplicitKeyPropertiesCache(type);            
+            var keys = KeyPropertiesCache(type);
+            var explicitKeys = ExplicitKeyPropertiesCache(type);
             var keyCount = keys.Count + explicitKeys.Count;
-           
+
             return keys.Count > 0 ? keys : explicitKeys;
         }
 
@@ -224,7 +299,7 @@ namespace Dapper.Contrib.Extensions
 
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    var val = res[property.Name.ToUpper()];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType() && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -261,13 +336,23 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
             var cacheType = typeof(List<T>);
+            var adapter = GetFormatter(connection);
 
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
                 GetKeys<T>(nameof(GetAll));
+                var sbColumnList = new StringBuilder();
                 var name = GetTableName(type);
+                var allProperties = TypePropertiesCache(type);
 
-                sql = "select * from " + name;
+                allProperties.ForEach(_ =>
+                {
+                    adapter.AppendColumnName(sbColumnList, _.Name);
+
+                    sbColumnList.Append(",");
+                });
+                sbColumnList = sbColumnList.Remove(sbColumnList.Length - 1, 1);
+                sql = $"select {sbColumnList.ToString()} from {name}";
                 GetQueries[cacheType.TypeHandle] = sql;
             }
 
@@ -280,7 +365,7 @@ namespace Dapper.Contrib.Extensions
                 var obj = ProxyGenerator.GetInterfaceProxy<T>();
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    var val = res[property.Name.ToUpper()];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType() && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -405,14 +490,29 @@ namespace Dapper.Contrib.Extensions
 
             if (!isList)    //single entity
             {
+
+
                 returnVal = adapter.Insert(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
-                    sbParameterList.ToString(), keyProperties, entityToInsert);
+                    sbParameterList.ToString(), keyProperties,
+                    RemapObject(keyProperties
+                    , allPropertiesExceptKeyAndComputed
+                    , entityToInsert));
+
+                var propertyInfos = keyProperties.ToArray();
+                if (propertyInfos.Length == 0) return returnVal;
+
+                var idProperty = propertyInfos[0];
+                idProperty.SetValue(entityToInsert, Convert.ChangeType(returnVal, idProperty.PropertyType), null);
+
             }
             else
             {
+
                 //insert list of entities
                 var cmd = $"insert into {name} ({sbColumnList}) values ({sbParameterList})";
-                returnVal = connection.Execute(cmd, entityToInsert, transaction, commandTimeout);
+                returnVal = connection.Execute(cmd,
+                    entityToInsert
+                    , transaction, commandTimeout);
             }
             if (wasClosed) connection.Close();
             return returnVal;
@@ -482,12 +582,54 @@ namespace Dapper.Contrib.Extensions
             {
                 var property = keyProperties[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
             }
-            var updated = connection.Execute(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction);
+
+            int updated = 0;
+
+
+            if (entityToUpdate is System.Collections.IEnumerable enumerable)
+            {
+                var res = new List<IDictionary<string, object>>();
+                foreach (var _ in enumerable)
+                    res.Add(RemapObject(keyProperties, nonIdProps, _));
+                updated = connection.Execute(sb.ToString(), res, commandTimeout: commandTimeout, transaction: transaction);
+
+            }
+            else
+            {
+                updated = connection.Execute(sb.ToString()
+                    , RemapObject(keyProperties, nonIdProps, entityToUpdate)
+                    , commandTimeout: commandTimeout
+                    , transaction: transaction);
+            }
+
             return updated > 0;
         }
+
+        private static IDictionary<string, object> RemapObject(List<PropertyInfo> keyProperties, List<PropertyInfo> nonIdProps, object entity)
+        {
+            IDictionary<string, object> dictionary = new Dictionary<string, object>();
+            var fakeParam = new SqlParameter();
+            
+            foreach (var property in nonIdProps.Union(keyProperties))
+            {
+                if (TypeHandlerDictionary.ContainsKey(property.PropertyType))
+                    TypeHandlerDictionary[property.PropertyType].SetValue(fakeParam, property.GetValue(entity));
+
+                dictionary.Add(property.Name, fakeParam.Value ?? property.GetValue(entity));
+            }
+            return dictionary;
+        }
+        public static void InitMapping()
+        {
+            TypeHandlerDictionary.ToList().ForEach(_ => SqlMapper.AddTypeHandler(_.Key, _.Value));
+        }
+
+        private static bool IsADate(PropertyInfo property) => property.PropertyType.Equals(typeof(DateTime?));
+        private static bool IsATime(PropertyInfo property) => property.PropertyType.Equals(typeof(TimeSpan?));
 
         /// <summary>
         /// Delete entity in table "Ts".
@@ -829,7 +971,57 @@ public partial interface ISqlAdapter
     /// <param name="columnName">The column name.</param>
     void AppendColumnNameEqualsValue(StringBuilder sb, string columnName);
 }
+/// <summary>
+/// The Db2i database adapter.
+/// </summary>
+public class IDB2Adapter : ISqlAdapter
+{
+    private class AlphabeticalComparer : IComparer<string>
+    {
+        public int Compare(string x, string y) => string.CompareOrdinal(x, y);
+    }
 
+    /// <summary>
+    /// Adds the name of a column.
+    /// </summary>
+    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="columnName">The column name.</param>
+    public void AppendColumnName(StringBuilder sb, string columnName)
+    {
+        sb.AppendFormat("{0}", columnName);
+    }
+    /// <summary>
+    /// Adds a column equality to a parameter.
+    /// </summary>
+    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="columnName">The column name.</param>
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
+    {
+        sb.AppendFormat("{0} = @{1}", columnName, columnName);
+    }
+
+
+    public int Insert(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
+    {
+
+        var cmd = $"insert into {tableName} ({columnList}) values ({parameterList})";
+        connection.Query(cmd, entityToInsert, transaction, true, commandTimeout);
+        var idRetriever = connection.Query("SELECT IDENTITY_VAL_LOCAL() AS id FROM SYSIBM.SYSDUMMY1");
+
+
+        var first = idRetriever.FirstOrDefault();
+        if (first == null || first.ID == null) return 0;
+
+        return (int)first.ID;
+    }
+
+
+
+    public Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
+    {
+        throw new NotImplementedException();
+    }
+}
 /// <summary>
 /// The SQL Server database adapter.
 /// </summary>

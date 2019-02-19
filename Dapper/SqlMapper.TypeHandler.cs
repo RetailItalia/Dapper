@@ -82,5 +82,7 @@ namespace Dapper
                 return Parse((string)value);
             }
         }
+
+      
     }
 }

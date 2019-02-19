@@ -22,7 +22,7 @@ namespace Dapper.Tests.Contrib
     public class SkippableFactAttribute : FactAttribute
     {
     }
-
+    /*
     public class SqlServerTestSuite : TestSuite
     {
         private const string DbName = "tempdb";
@@ -187,4 +187,5 @@ namespace Dapper.Tests.Contrib
         }
     }
 #endif
+*/
 }
