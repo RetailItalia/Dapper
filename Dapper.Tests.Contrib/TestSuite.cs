@@ -20,7 +20,7 @@ namespace Dapper.Tests.Contrib
     {
         [Key]
         public int Id { get; set; }
-        [Key]
+        [ExplicitKey]
         public string Code { get; set; }
         public string Name { get; set; }
     }

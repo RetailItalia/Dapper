@@ -235,15 +235,10 @@ namespace Dapper.Contrib.Extensions
 
             return keys.Count > 0 ? keys[0] : explicitKeys[0];
         }
-        private static IEnumerable<PropertyInfo> GetKeys<T>(string method)
-        {
-            var type = typeof(T);
-            var keys = KeyPropertiesCache(type);
-            var explicitKeys = ExplicitKeyPropertiesCache(type);
-            var keyCount = keys.Count + explicitKeys.Count;
 
-            return keys.Count > 0 ? keys : explicitKeys;
-        }
+        private static IEnumerable<PropertyInfo> GetKeys<T>(string method) => GetKeys(typeof(T));
+        internal static IEnumerable<PropertyInfo> GetKeys(Type type) =>
+            KeyPropertiesCache(type).Union(ExplicitKeyPropertiesCache(type));
 
         private static string BuildWhereCondition(IEnumerable<string> pars) =>
            pars.Count() == 1 ?

@@ -29,7 +29,8 @@ namespace Dapper.Tests.Contrib
         public static string ConnectionString =>
             IsAppVeyor
                 ? @"Server=(local)\SQL2016;Database=tempdb;User ID=sa;Password=Password12!"
-                : $"Data Source=.;Initial Catalog={DbName};Integrated Security=True";
+                : @"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename=E:\dev\experiments\ConsoleApp2\ConsoleApp2\Database1.mdf;Integrated Security=True;Initial Catalog={DbName};";
+        //: $"Data Source=.;Initial Catalog={DbName};Integrated Security=True";
         public override IDbConnection GetConnection() => new SqlConnection(ConnectionString);
 
         static SqlServerTestSuite()
