@@ -26,9 +26,9 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
 
+            var key = GetKeys<T>(nameof(GetAsync));
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
-                var key = GetKeys<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
                 var pars = key.Select(k => k.Name);
@@ -39,7 +39,9 @@ namespace Dapper.Contrib.Extensions
                 GetParameters[type.TypeHandle] = pars;
             }
 
-            var dynParms = BuildParametersWhereCondition(type.TypeHandle, id) as DynamicParameters;
+            var dynParms = IsASystemType(id)
+                ? BuildParametersWhereCondition(type.TypeHandle, id) as DynamicParameters
+                : BuildParametersWhereCondition(type.TypeHandle, RemapObject(key, null, id)) as DynamicParameters;
 
             if (!type.IsInterface())
                 return (await connection.QueryAsync<T>(sql, dynParms, transaction, commandTimeout).ConfigureAwait(false)).FirstOrDefault();
@@ -53,7 +55,7 @@ namespace Dapper.Contrib.Extensions
 
             foreach (var property in TypePropertiesCache(type))
             {
-                var val = res[property.Name];
+                var val = res[property.Name.ToUpper()];
                 if (val == null) continue;
                 if (property.PropertyType.IsGenericType() && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                 {
@@ -71,6 +73,12 @@ namespace Dapper.Contrib.Extensions
             return obj;
         }
 
+        private static bool IsASystemType(dynamic id)
+        {
+
+            return id.GetType().Namespace != null && id.GetType().Namespace.StartsWith("System");
+        }
+
         /// <summary>
         /// Returns a list of entites from table "Ts".  
         /// Id of T must be marked with [Key] attribute.
@@ -86,7 +94,7 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
             var cacheType = typeof(List<T>);
-
+            
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
                 GetSingleKey<T>(nameof(GetAll));
@@ -112,7 +120,7 @@ namespace Dapper.Contrib.Extensions
                 var obj = ProxyGenerator.GetInterfaceProxy<T>();
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    var val = res[property.Name.ToUpper()];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType() && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -145,7 +153,7 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
             sqlAdapter = sqlAdapter ?? GetFormatter(connection);
-
+            var map = GetMap(type);
             var isList = false;
             if (type.IsArray)
             {
@@ -176,7 +184,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
                 var property = allPropertiesExceptKeyAndComputed[i];
-                sqlAdapter.AppendColumnName(sbColumnList, property.Name);
+                sqlAdapter.AppendColumnName(sbColumnList, map.GetColumnName(property));
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbColumnList.Append(", ");
             }
@@ -193,12 +201,31 @@ namespace Dapper.Contrib.Extensions
             if (!isList)    //single entity
             {
                 return sqlAdapter.InsertAsync(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
-                    sbParameterList.ToString(), keyProperties, entityToInsert);
+                    sbParameterList.ToString(), keyProperties,
+                    RemapObject(keyProperties
+                    , allPropertiesExceptKeyAndComputed
+                    , entityToInsert)).ContinueWith(_ =>
+                    {
+                        var propertyInfos = keyProperties.ToArray();
+                        if (propertyInfos.Length == 0) return _.Result;
+
+                        var idProperty = propertyInfos[0];
+                        idProperty.SetValue(entityToInsert, Convert.ChangeType(_.Result, idProperty.PropertyType), null);
+                        return _.Result;
+                    });
             }
 
             //insert list of entities
             var cmd = $"INSERT INTO {name} ({sbColumnList}) values ({sbParameterList})";
             return connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
+        }
+
+        private static IAliasColumnMap GetMap(Type type)
+        {
+            return ColumnNameMappingDictionary
+                    .FirstOrDefault(_ => _.Key == type)
+                    .Value as IAliasColumnMap 
+                    ?? new DefaultMap();
         }
 
         /// <summary>
@@ -218,6 +245,7 @@ namespace Dapper.Contrib.Extensions
             }
 
             var type = typeof(T);
+            var map = GetMap(type);
 
             if (type.IsArray)
             {
@@ -256,7 +284,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < nonIdProps.Count; i++)
             {
                 var property = nonIdProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                adapter.AppendColumnNameEqualsValue(sb,map.GetColumnName(property),property.Name);
                 if (i < nonIdProps.Count - 1)
                     sb.Append(", ");
             }
@@ -264,11 +292,29 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                adapter.AppendColumnNameEqualsValue(sb, map.GetColumnName(property), property.Name);
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
             }
-            var updated = await connection.ExecuteAsync(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
+            int updated = 0;
+
+
+            if (entityToUpdate is System.Collections.IEnumerable enumerable)
+            {
+                var res = new List<IDictionary<string, object>>();
+                foreach (var _ in enumerable)
+                    res.Add(RemapObject(keyProperties, nonIdProps, _));
+                updated = await connection.ExecuteAsync(sb.ToString(), res, commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
+
+            }
+            else
+            {
+                updated = await connection.ExecuteAsync(sb.ToString()
+                    , RemapObject(keyProperties, nonIdProps, entityToUpdate)
+                    , commandTimeout: commandTimeout
+                    , transaction: transaction).ConfigureAwait(false);
+            }
+
             return updated > 0;
         }
 
@@ -325,7 +371,27 @@ namespace Dapper.Contrib.Extensions
                 if (i < keyProperties.Count - 1)
                     sb.Append(" AND ");
             }
-            var deleted = await connection.ExecuteAsync(sb.ToString(), entityToDelete, transaction, commandTimeout).ConfigureAwait(false);
+            
+            var deleted = 0;
+
+
+            if (entityToDelete is System.Collections.IEnumerable enumerable)
+            {
+                var res = new List<IDictionary<string, object>>();
+                foreach (var _ in enumerable)
+                    res.Add(RemapObject(keyProperties, null, _));
+                deleted = await connection.ExecuteAsync(sb.ToString(), res, commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
+
+            }
+            else
+            {
+                deleted = await connection.ExecuteAsync(sb.ToString()
+                    , RemapObject(keyProperties, null, entityToDelete)
+                    , commandTimeout: commandTimeout
+                    , transaction: transaction).ConfigureAwait(false);
+            }
+
+            
             return deleted > 0;
         }
 

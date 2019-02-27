@@ -9,8 +9,8 @@ using System.Reflection.Emit;
 
 using Dapper;
 using System.Threading.Tasks;
-using System.Dynamic;
 using System.Data.SqlClient;
+using System.Linq.Expressions;
 
 #if NETSTANDARD1_3
 using DataException = System.InvalidOperationException;
@@ -82,7 +82,7 @@ namespace Dapper.Contrib.Extensions
     /// </summary>
     public static partial class SqlMapperExtensions
     {
-       
+
 
         /// <summary>
         /// Defined a proxy object with a possibly dirty state.
@@ -147,6 +147,11 @@ namespace Dapper.Contrib.Extensions
                 [typeof(TimeSpan)] = new TimeHandler(),
                 [typeof(TimeSpan?)] = new NullableTimeHandler()
             };
+
+
+        private static readonly Dictionary<Type, IEntityMap> ColumnNameMappingDictionary
+           = new Dictionary<Type, IEntityMap>();
+
         private static List<PropertyInfo> ComputedPropertiesCache(Type type)
         {
             if (ComputedProperties.TryGetValue(type.TypeHandle, out IEnumerable<PropertyInfo> pi))
@@ -243,12 +248,100 @@ namespace Dapper.Contrib.Extensions
         private static string BuildWhereCondition(IEnumerable<string> pars) =>
            pars.Count() == 1 ?
                  $"{pars.First()} = @id" :
-                 pars.Select(p => $"{p} = @{p}").Aggregate((a, b) => $"{a} AND {b}");
+                 pars.Select(p => $"{p} = @{p}")
+                        .Aggregate((a, b) => $"{a} AND {b}");
 
         private static DynamicParameters BuildParametersWhereCondition(RuntimeTypeHandle typeHandle, dynamic id) =>
              (GetParameters.TryGetValue(typeHandle, out IEnumerable<string> parameters) && parameters.Count() > 1) ?
                 new DynamicParameters(id) :
                 new DynamicParameters(new { id });
+
+        public class PropertyMap
+        {
+            public string ColumnName { get; set; }
+            public PropertyInfo Field { get; set; }
+            public PropertyMap()
+            {
+
+            }
+            public void ToColumn(string name)
+            {
+                this.ColumnName = name;
+
+            }
+        }
+
+        public class DefaultMap : IAliasColumnMap
+        {
+            
+
+            public string GetColumnName(PropertyInfo property)
+            {
+                return property.Name;
+            }
+
+        }
+
+        public interface IEntityMap : IAliasColumnMap, IAliasPropertyMap { };
+        public interface IEntityMap<T> : IEntityMap { };
+
+        public class EntityMap<T> : IEntityMap<T> where T : class 
+        {
+            IList<PropertyMap> PropertyMaps { get; set; }
+
+            public EntityMap()
+            {
+                PropertyMaps = new List<PropertyMap>();
+            }
+
+            protected PropertyMap Map(Expression<Func<T, object>> expression)
+            {
+
+                if (expression.Body.NodeType != ExpressionType.MemberAccess)
+                    throw new ArgumentException("Only ExpressionType.MemberAccess are supported");
+
+                var name = ((MemberExpression)expression.Body).Member.Name;
+                var memberType = expression.Parameters.FirstOrDefault()?.Type;
+
+                var map = new PropertyMap
+                {
+                    ColumnName = name,
+                    Field = memberType.GetProperty(name)
+                };
+                PropertyMaps.Add(map);
+                return map;
+
+            }
+
+            public string GetColumnName(PropertyInfo property)
+            {
+                return PropertyMaps.FirstOrDefault(_ => _.Field == property)?.ColumnName ?? property.Name;
+            }
+
+            public PropertyInfo GetPropertyMap(string name)
+            {
+                return PropertyMaps.FirstOrDefault(_ => _.ColumnName.Equals(name,StringComparison.CurrentCultureIgnoreCase))?.Field;
+            }
+        }
+
+        public static void RegisterMap<T>(IEntityMap<T> map) where T : class
+        {
+            if (ColumnNameMappingDictionary.ContainsKey(typeof(T)))
+                ColumnNameMappingDictionary.Remove(typeof(T));
+
+            ColumnNameMappingDictionary.Add(typeof(T), map);
+            SqlMapper.SetTypeMap(typeof(T),
+                    new CustomPropertyTypeMap(typeof(T), (t, n) =>
+                    {
+                        return 
+                           ColumnNameMappingDictionary
+                               .FirstOrDefault(_ => _.Key.Equals(t))
+                               .Value
+                            .GetPropertyMap(n) ?? t.GetProperty(n, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+                        
+                    }));
+
+        }
 
         /// <summary>
         /// Returns a single entity by a single id from table "Ts".  
@@ -332,6 +425,7 @@ namespace Dapper.Contrib.Extensions
             var type = typeof(T);
             var cacheType = typeof(List<T>);
             var adapter = GetFormatter(connection);
+            var map = GetMap(type);
 
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
@@ -342,7 +436,7 @@ namespace Dapper.Contrib.Extensions
 
                 allProperties.ForEach(_ =>
                 {
-                    adapter.AppendColumnName(sbColumnList, _.Name);
+                    adapter.AppendColumnName(sbColumnList,map.GetColumnName(_));
 
                     sbColumnList.Append(",");
                 });
@@ -452,6 +546,7 @@ namespace Dapper.Contrib.Extensions
                     type = type.GetGenericArguments()[0];
                 }
             }
+            var map = GetMap(type);
 
             var name = GetTableName(type);
             var sbColumnList = new StringBuilder(null);
@@ -464,8 +559,9 @@ namespace Dapper.Contrib.Extensions
 
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
+                
                 var property = allPropertiesExceptKeyAndComputed[i];
-                adapter.AppendColumnName(sbColumnList, property.Name);  //fix for issue #336
+                adapter.AppendColumnName(sbColumnList, map.GetColumnName(property));  //fix for issue #336
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbColumnList.Append(", ");
             }
@@ -530,6 +626,7 @@ namespace Dapper.Contrib.Extensions
             }
 
             var type = typeof(T);
+            var map = GetMap(type);
 
             if (type.IsArray)
             {
@@ -568,7 +665,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < nonIdProps.Count; i++)
             {
                 var property = nonIdProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                adapter.AppendColumnNameEqualsValue(sb, map.GetColumnName(property),property.Name);  //fix for issue #336
                 if (i < nonIdProps.Count - 1)
                     sb.Append(", ");
             }
@@ -576,7 +673,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                adapter.AppendColumnNameEqualsValue(sb, map.GetColumnName(property), property.Name);  //fix for issue #336
 
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
@@ -604,17 +701,25 @@ namespace Dapper.Contrib.Extensions
             return updated > 0;
         }
 
-        private static IDictionary<string, object> RemapObject(List<PropertyInfo> keyProperties, List<PropertyInfo> nonIdProps, object entity)
+        private static IDictionary<string, object> RemapObject(IEnumerable<PropertyInfo> keyProperties, IEnumerable<PropertyInfo> nonIdProps, object entity)
         {
             IDictionary<string, object> dictionary = new Dictionary<string, object>();
             var fakeParam = new SqlParameter();
-            
+            keyProperties = keyProperties ?? new List<PropertyInfo>();
+            nonIdProps = nonIdProps ?? new List<PropertyInfo>();
+
+
             foreach (var property in nonIdProps.Union(keyProperties))
             {
                 if (TypeHandlerDictionary.ContainsKey(property.PropertyType))
                     TypeHandlerDictionary[property.PropertyType].SetValue(fakeParam, property.GetValue(entity));
 
-                dictionary.Add(property.Name, fakeParam.Value ?? property.GetValue(entity));
+                dynamic d = entity;
+
+                dictionary.Add(property.Name,
+                    fakeParam.Value ??
+                    d.GetType().GetProperty(property.Name).GetValue(d, null)
+                     );
             }
             return dictionary;
         }
@@ -965,6 +1070,7 @@ public partial interface ISqlAdapter
     /// <param name="sb">The string builder  to append to.</param>
     /// <param name="columnName">The column name.</param>
     void AppendColumnNameEqualsValue(StringBuilder sb, string columnName);
+    void AppendColumnNameEqualsValue(StringBuilder sb, string columnName,string fieldName);
 }
 /// <summary>
 /// The Db2i database adapter.
@@ -992,7 +1098,7 @@ public class IDB2Adapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("{0} = @{1}", columnName, columnName);
+        sb.AppendFormat("{0} = @{0}", columnName);
     }
 
 
@@ -1012,9 +1118,23 @@ public class IDB2Adapter : ISqlAdapter
 
 
 
-    public Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
+    public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
-        throw new NotImplementedException();
+        var cmd = $"INSERT INTO {tableName} ({columnList}) values ({parameterList})";
+        await connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
+        var idRetriever = await connection.QueryAsync("SELECT IDENTITY_VAL_LOCAL() AS id FROM SYSIBM.SYSDUMMY1");
+
+        var first = idRetriever.FirstOrDefault();
+        if (first == null || first.ID == null) return 0;
+
+        return (int)first.ID;
+
+
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("{0} = @{1}", columnName,fieldName);
     }
 }
 /// <summary>
@@ -1069,7 +1189,12 @@ public partial class SqlServerAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("[{0}] = @{1}", columnName, columnName);
+        sb.AppendFormat("[{0}] = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("[{0}] = @{1}", columnName, fieldName);
     }
 }
 
@@ -1125,7 +1250,12 @@ public partial class SqlCeServerAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("[{0}] = @{1}", columnName, columnName);
+        sb.AppendFormat("[{0}] = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("[{0}] = @{1}", columnName, fieldName);
     }
 }
 
@@ -1180,7 +1310,12 @@ public partial class MySqlAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("`{0}` = @{1}", columnName, columnName);
+        sb.AppendFormat("`{0}` = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("`{0}` = @{1}", columnName, fieldName);
     }
 }
 
@@ -1256,7 +1391,12 @@ public partial class PostgresAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("\"{0}\" = @{1}", columnName, columnName);
+        sb.AppendFormat("\"{0}\" = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("\"{0}\" = @{1}", columnName, fieldName);
     }
 }
 
@@ -1309,7 +1449,12 @@ public partial class SQLiteAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("\"{0}\" = @{1}", columnName, columnName);
+        sb.AppendFormat("\"{0}\" = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("\"{0}\" = @{1}", columnName, fieldName);
     }
 }
 
@@ -1366,6 +1511,11 @@ public partial class FbAdapter : ISqlAdapter
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("{0} = @{1}", columnName, columnName);
+        sb.AppendFormat("{0} = @{0}", columnName);
+    }
+
+    public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
+    {
+        sb.AppendFormat("{0} = @{1}", columnName, fieldName);
     }
 }

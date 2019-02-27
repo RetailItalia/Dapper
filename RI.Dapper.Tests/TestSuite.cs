@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Reflection;
 using System.Transactions;
 using Dapper;
 using Dapper.Contrib.Extensions;
@@ -15,7 +16,7 @@ namespace RI.Dapper.Tests
     {
         [Key]
         public int Id { get; set; }
-        [Key]
+        [ExplicitKey]
         public string Code { get; set; }
         public string Name { get; set; }
     }
@@ -78,6 +79,26 @@ namespace RI.Dapper.Tests
         public int Id { get; set; }
         public TimeSpan? TimeValue { get; set; }
     }
+
+    public class AliasedField
+    {
+        [Key]
+        public int Id { get; set; }
+        public string AliasField { get; set; }
+
+        public class AliasMapper : SqlMapperExtensions.EntityMap<AliasedField>
+        {
+            public AliasMapper()
+            {
+                Map(_ => _.AliasField).ToColumn("Field");
+            }
+
+           
+        }
+
+
+    }
+
     public class Person
     {
         public int Id { get; set; }
@@ -748,17 +769,6 @@ namespace RI.Dapper.Tests
         [Fact]
         public void InsertGetTimeField()
         {
-            /*
-             * 
-             *  public SqlMapperExtensions()
-         {
-             SqlMapper.AddTypeHandler(new TimeHandler());
-             SqlMapper.AddTypeHandler(new NullableTimeHandler());
-             SqlMapper.AddTypeHandler(new NullableDateHandler());
-             SqlMapper.AddTypeHandler(new DateHandler());
-         }
-             */
-
             using (var connection = GetOpenConnection())
             {
                 var expected = DateTime.Now.TimeOfDay;
@@ -770,7 +780,113 @@ namespace RI.Dapper.Tests
             }
 
         }
-    }
-    
 
+        [Fact]
+        public async void GetAllAliasedFieldAsyncGetAllAliasedField()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                connection.DeleteAll<AliasedField>();
+                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
+
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+
+                var actual = (await connection.GetAllAsync<AliasedField>()).FirstOrDefault();
+
+                Assert.Equal( "Adam", actual.AliasField);
+            }
+
+        }
+        [Fact]
+        public void GetAllAliasedField()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                connection.DeleteAll<AliasedField>();
+
+                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+
+                var actual = connection.GetAll<AliasedField>().FirstOrDefault();
+                Assert.Equal("Adam", actual.AliasField);
+            }
+
+        }
+        [Fact]
+        public void InsertGetAliasedField()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+                connection.DeleteAll<AliasedField>();
+                var id = connection.Insert(new AliasedField() { AliasField = "Adam" });
+                var actual = connection.Get<AliasedField>(id);
+                Assert.Equal("Adam", actual.AliasField);
+            }
+
+        }
+        [Fact]
+        public void InsertGetUpdateAliasedField()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+                connection.DeleteAll<AliasedField>();
+                var id = connection.Insert(new AliasedField() { AliasField = "Adam" });
+                var actual = connection.Get<AliasedField>(id);
+                Assert.Equal("Adam", actual.AliasField);
+
+                actual.AliasField = "Eva";
+                var updated = connection.Update(actual);
+                Assert.True(updated);
+
+                actual = connection.Get<AliasedField>(id);
+                Assert.Equal("Eva", actual.AliasField);
+            }
+
+        }
+        [Fact]
+        public async void InsertGetUpdateAliasedFieldAsync()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+                connection.DeleteAll<AliasedField>();
+                var id = await connection.InsertAsync(new AliasedField() { AliasField = "Adam" });
+                var actual = await connection.GetAsync<AliasedField>(id);
+                Assert.Equal("Adam", actual.AliasField);
+
+                actual.AliasField = "Eva";
+                var updated = await connection.UpdateAsync(actual);
+                Assert.True(updated);
+
+                actual = await connection.GetAsync<AliasedField>(id);
+                Assert.Equal("Eva", actual.AliasField);
+            }
+
+        }
+
+        [Fact]
+        public async void InsertGetAliasedFieldAsync()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                SqlMapperExtensions
+                    .RegisterMap(new AliasedField.AliasMapper());
+                connection.DeleteAll<AliasedField>();
+                var id = await connection.InsertAsync(new AliasedField() { AliasField = "Adam" });
+                var actual = await connection.GetAsync<AliasedField>(id);
+                Assert.Equal("Adam", actual.AliasField);
+            }
+
+        }
+
+    }
+
+   
 }

@@ -83,8 +83,10 @@ namespace RI.Dapper.Tests
                 run("CREATE  TABLE Article (Id INTEGER GENERATED ALWAYS AS IDENTITY not null,Code varchar(15), Name varchar(100) not null) ");
                 dropTable("TimeFields");
                 run("CREATE  TABLE TimeFields (Id INTEGER GENERATED ALWAYS AS IDENTITY not null, TimeValue time )");
+                dropTable("AliasedFields");
+                run("CREATE  TABLE AliasedFields (Id INTEGER GENERATED ALWAYS AS IDENTITY not null, Field varchar(50))");
 
-                
+
             }
         }
 

@@ -53,6 +53,7 @@
   <ItemGroup>
     <Compile Include="DB2TestSuite.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TestSuite.Async.cs" />
     <Compile Include="TestSuite.cs" />
   </ItemGroup>
   <ItemGroup>
