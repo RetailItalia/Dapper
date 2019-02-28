@@ -25,13 +25,13 @@ namespace Dapper.Contrib.Extensions
         public static async Task<T> GetAsync<T>(this IDbConnection connection, dynamic id, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-
+            var map = GetMap(type);
             var key = GetKeys<T>(nameof(GetAsync));
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
                 var name = GetTableName(type);
 
-                var pars = key.Select(k => k.Name);
+                var pars = key.Select(k => map.GetColumnName(k));
 
                 sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
 

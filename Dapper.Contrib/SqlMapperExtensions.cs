@@ -297,11 +297,12 @@ namespace Dapper.Contrib.Extensions
             protected PropertyMap Map(Expression<Func<T, object>> expression)
             {
 
-                if (expression.Body.NodeType != ExpressionType.MemberAccess)
-                    throw new ArgumentException("Only ExpressionType.MemberAccess are supported");
 
-                var name = ((MemberExpression)expression.Body).Member.Name;
-                var memberType = expression.Parameters.FirstOrDefault()?.Type;
+                var member = ReflectionHelper.GetMemberInfo((LambdaExpression)expression);
+
+
+                var name = member.Name;
+                var memberType = expression.Parameters[0].Type;
 
                 var map = new PropertyMap
                 {
@@ -358,13 +359,13 @@ namespace Dapper.Contrib.Extensions
         public static T Get<T>(this IDbConnection connection, dynamic id, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-
+            var map = GetMap(type);
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
                 var key = GetKeys<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
-                var pars = key.Select(k => k.Name);
+                var pars = key.Select(k => map.GetColumnName(k));
 
                 sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
 

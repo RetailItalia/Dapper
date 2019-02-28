@@ -91,6 +91,7 @@ namespace RI.Dapper.Tests
             public AliasMapper()
             {
                 Map(_ => _.AliasField).ToColumn("Field");
+                Map(_ => _.Id).ToColumn("IdRec");
             }
 
            
@@ -786,11 +787,11 @@ namespace RI.Dapper.Tests
         {
             using (var connection = GetOpenConnection())
             {
-                connection.DeleteAll<AliasedField>();
-                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
-
                 SqlMapperExtensions
                     .RegisterMap(new AliasedField.AliasMapper());
+
+                connection.DeleteAll<AliasedField>();
+                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
 
                 var actual = (await connection.GetAllAsync<AliasedField>()).FirstOrDefault();
 
@@ -803,12 +804,12 @@ namespace RI.Dapper.Tests
         {
             using (var connection = GetOpenConnection())
             {
-                connection.DeleteAll<AliasedField>();
-
-                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
                 SqlMapperExtensions
                     .RegisterMap(new AliasedField.AliasMapper());
 
+                connection.DeleteAll<AliasedField>();
+
+                connection.Execute("insert into AliasedFields (Field) values('Adam') ");
                 var actual = connection.GetAll<AliasedField>().FirstOrDefault();
                 Assert.Equal("Adam", actual.AliasField);
             }
