@@ -11,6 +11,7 @@ using Dapper;
 using System.Threading.Tasks;
 using System.Data.SqlClient;
 using System.Linq.Expressions;
+using Dapper.Contrib.Extensions.Mapping;
 
 #if NETSTANDARD1_3
 using DataException = System.InvalidOperationException;
@@ -256,93 +257,35 @@ namespace Dapper.Contrib.Extensions
                 new DynamicParameters(id) :
                 new DynamicParameters(new { id });
 
-        public class PropertyMap
+
+
+        public static void RegisterAllMap(Assembly assembly) => assembly
+            .GetTypes().Where(t => t.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEntityMap<>)))
+            .ToList()
+            .ForEach(_ => RegisterMap(_.BaseType.GetGenericArguments()[0], Activator.CreateInstance(_) as IEntityMap));
+
+        public static void RegisterAllMap() => RegisterAllMap(Assembly.GetCallingAssembly());
+
+        public static void RegisterMap(Type type, IEntityMap map)
         {
-            public string ColumnName { get; set; }
-            public PropertyInfo Field { get; set; }
-            public PropertyMap()
-            {
+            if (ColumnNameMappingDictionary.ContainsKey(type))
+                ColumnNameMappingDictionary.Remove(type);
 
-            }
-            public void ToColumn(string name)
-            {
-                this.ColumnName = name;
-
-            }
-        }
-
-        public class DefaultMap : IAliasColumnMap
-        {
-            
-
-            public string GetColumnName(PropertyInfo property)
-            {
-                return property.Name;
-            }
-
-        }
-
-        public interface IEntityMap : IAliasColumnMap, IAliasPropertyMap { };
-        public interface IEntityMap<T> : IEntityMap { };
-
-        public class EntityMap<T> : IEntityMap<T> where T : class 
-        {
-            IList<PropertyMap> PropertyMaps { get; set; }
-
-            public EntityMap()
-            {
-                PropertyMaps = new List<PropertyMap>();
-            }
-
-            protected PropertyMap Map(Expression<Func<T, object>> expression)
-            {
-
-
-                var member = ReflectionHelper.GetMemberInfo((LambdaExpression)expression);
-
-
-                var name = member.Name;
-                var memberType = expression.Parameters[0].Type;
-
-                var map = new PropertyMap
-                {
-                    ColumnName = name,
-                    Field = memberType.GetProperty(name)
-                };
-                PropertyMaps.Add(map);
-                return map;
-
-            }
-
-            public string GetColumnName(PropertyInfo property)
-            {
-                return PropertyMaps.FirstOrDefault(_ => _.Field == property)?.ColumnName ?? property.Name;
-            }
-
-            public PropertyInfo GetPropertyMap(string name)
-            {
-                return PropertyMaps.FirstOrDefault(_ => _.ColumnName.Equals(name,StringComparison.CurrentCultureIgnoreCase))?.Field;
-            }
-        }
-
-        public static void RegisterMap<T>(IEntityMap<T> map) where T : class
-        {
-            if (ColumnNameMappingDictionary.ContainsKey(typeof(T)))
-                ColumnNameMappingDictionary.Remove(typeof(T));
-
-            ColumnNameMappingDictionary.Add(typeof(T), map);
-            SqlMapper.SetTypeMap(typeof(T),
-                    new CustomPropertyTypeMap(typeof(T), (t, n) =>
+            ColumnNameMappingDictionary.Add(type, map);
+            SqlMapper.SetTypeMap(type,
+                    new CustomPropertyTypeMap(type, (t, n) =>
                     {
-                        return 
+                        return
                            ColumnNameMappingDictionary
                                .FirstOrDefault(_ => _.Key.Equals(t))
                                .Value
                             .GetPropertyMap(n) ?? t.GetProperty(n, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                        
+
                     }));
 
+
         }
+        public static void RegisterMap<T>(IEntityMap map) where T : class => RegisterMap(typeof(T), map);
 
         /// <summary>
         /// Returns a single entity by a single id from table "Ts".  
@@ -359,15 +302,28 @@ namespace Dapper.Contrib.Extensions
         public static T Get<T>(this IDbConnection connection, dynamic id, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
+            var adapter = GetFormatter(connection);
+
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
                 var key = GetKeys<T>(nameof(GetAsync));
                 var name = GetTableName(type);
+                var allProperties = TypePropertiesCache(type);
+                var computed = ComputedPropertiesCache(type);
+                var sbColumnList = new StringBuilder();
 
                 var pars = key.Select(k => map.GetColumnName(k));
 
-                sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
+                allProperties.Except(computed).ToList().ForEach(_ =>
+                {
+                    adapter.AppendColumnName(sbColumnList, map.GetColumnName(_));
+
+                    sbColumnList.Append(",");
+                });
+                sbColumnList = sbColumnList.Remove(sbColumnList.Length - 1, 1);
+
+                sql = $"SELECT {sbColumnList.ToString()} FROM {name} WHERE {BuildWhereCondition(pars)}";
 
                 GetQueries[type.TypeHandle] = sql;
                 GetParameters[type.TypeHandle] = pars;
@@ -426,7 +382,7 @@ namespace Dapper.Contrib.Extensions
             var type = typeof(T);
             var cacheType = typeof(List<T>);
             var adapter = GetFormatter(connection);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
 
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
@@ -434,10 +390,11 @@ namespace Dapper.Contrib.Extensions
                 var sbColumnList = new StringBuilder();
                 var name = GetTableName(type);
                 var allProperties = TypePropertiesCache(type);
+                var computed = ComputedPropertiesCache(type);
 
-                allProperties.ForEach(_ =>
+                allProperties.Except(computed).ToList().ForEach(_ =>
                 {
-                    adapter.AppendColumnName(sbColumnList,map.GetColumnName(_));
+                    adapter.AppendColumnName(sbColumnList, map.GetColumnName(_));
 
                     sbColumnList.Append(",");
                 });
@@ -473,46 +430,8 @@ namespace Dapper.Contrib.Extensions
             return list;
         }
 
-        /// <summary>
-        /// Specify a custom table name mapper based on the POCO type name
-        /// </summary>
-        public static TableNameMapperDelegate TableNameMapper;
 
-        private static string GetTableName(Type type)
-        {
-            if (TypeTableName.TryGetValue(type.TypeHandle, out string name)) return name;
-
-            if (TableNameMapper != null)
-            {
-                name = TableNameMapper(type);
-            }
-            else
-            {
-#if NETSTANDARD1_3
-                var info = type.GetTypeInfo();
-#else
-                var info = type;
-#endif
-                //NOTE: This as dynamic trick falls back to handle both our own Table-attribute as well as the one in EntityFramework 
-                var tableAttrName =
-                    info.GetCustomAttribute<TableAttribute>(false)?.Name
-                    ?? (info.GetCustomAttributes(false).FirstOrDefault(attr => attr.GetType().Name == "TableAttribute") as dynamic)?.Name;
-
-                if (tableAttrName != null)
-                {
-                    name = tableAttrName;
-                }
-                else
-                {
-                    name = type.Name + "s";
-                    if (type.IsInterface() && name.StartsWith("I"))
-                        name = name.Substring(1);
-                }
-            }
-
-            TypeTableName[type.TypeHandle] = name;
-            return name;
-        }
+        private static string GetTableName(Type type) => GetTableAliasMap(type).GetTableMap();
 
         /// <summary>
         /// Inserts an entity into table "Ts" and returns identity id or number of inserted rows if inserting a list.
@@ -547,7 +466,7 @@ namespace Dapper.Contrib.Extensions
                     type = type.GetGenericArguments()[0];
                 }
             }
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
 
             var name = GetTableName(type);
             var sbColumnList = new StringBuilder(null);
@@ -560,7 +479,7 @@ namespace Dapper.Contrib.Extensions
 
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
-                
+
                 var property = allPropertiesExceptKeyAndComputed[i];
                 adapter.AppendColumnName(sbColumnList, map.GetColumnName(property));  //fix for issue #336
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
@@ -627,7 +546,7 @@ namespace Dapper.Contrib.Extensions
             }
 
             var type = typeof(T);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
 
             if (type.IsArray)
             {
@@ -666,7 +585,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < nonIdProps.Count; i++)
             {
                 var property = nonIdProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, map.GetColumnName(property),property.Name);  //fix for issue #336
+                adapter.AppendColumnNameEqualsValue(sb, map.GetColumnName(property), property.Name);  //fix for issue #336
                 if (i < nonIdProps.Count - 1)
                     sb.Append(", ");
             }
@@ -724,9 +643,11 @@ namespace Dapper.Contrib.Extensions
             }
             return dictionary;
         }
-        public static void InitMapping()
+        public static void InitMapping() => InitMapping(Assembly.GetCallingAssembly());
+        public static void InitMapping( Assembly assembly)
         {
             TypeHandlerDictionary.ToList().ForEach(_ => SqlMapper.AddTypeHandler(_.Key, _.Value));
+            RegisterAllMap(assembly);
         }
 
         private static bool IsADate(PropertyInfo property) => property.PropertyType.Equals(typeof(DateTime?));
@@ -770,7 +691,7 @@ namespace Dapper.Contrib.Extensions
             if (keyProperties.Count == 0 && explicitKeyProperties.Count == 0)
                 throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
 
-            var name = GetTableName(type);
+            var name = GetTableAliasMap(type).GetTableMap();
             keyProperties.AddRange(explicitKeyProperties);
 
             var sb = new StringBuilder();
@@ -800,7 +721,7 @@ namespace Dapper.Contrib.Extensions
         public static bool DeleteAll<T>(this IDbConnection connection, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var name = GetTableName(type);
+            var name = GetTableAliasMap(type).GetTableMap();
             var statement = $"delete from {name}";
             var deleted = connection.Execute(statement, null, transaction, commandTimeout);
             return deleted > 0;
@@ -1071,7 +992,7 @@ public partial interface ISqlAdapter
     /// <param name="sb">The string builder  to append to.</param>
     /// <param name="columnName">The column name.</param>
     void AppendColumnNameEqualsValue(StringBuilder sb, string columnName);
-    void AppendColumnNameEqualsValue(StringBuilder sb, string columnName,string fieldName);
+    void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName);
 }
 /// <summary>
 /// The Db2i database adapter.
@@ -1135,7 +1056,7 @@ public class IDB2Adapter : ISqlAdapter
 
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName, string fieldName)
     {
-        sb.AppendFormat("{0} = @{1}", columnName,fieldName);
+        sb.AppendFormat("{0} = @{1}", columnName, fieldName);
     }
 }
 /// <summary>

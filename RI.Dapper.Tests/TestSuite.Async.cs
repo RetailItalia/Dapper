@@ -146,6 +146,7 @@ namespace RI.Dapper.Tests
         [Fact]
         public async Task TableNameAsync()
         {
+          
             using (var connection = GetOpenConnection())
             {
                 // tests against "Automobiles" table (Table attribute)
@@ -155,8 +156,11 @@ namespace RI.Dapper.Tests
                 Assert.Equal("VolvoAsync", car.Name);
                 Assert.True(await connection.UpdateAsync(new Car { Id = id, Name = "SaabAsync" }).ConfigureAwait(false));
                 Assert.Equal("SaabAsync", (await connection.GetAsync<Car>(id).ConfigureAwait(false)).Name);
+                Assert.NotEmpty(await connection.GetAllAsync<Car>());
                 Assert.True(await connection.DeleteAsync(new Car { Id = id }).ConfigureAwait(false));
                 Assert.Null(await connection.GetAsync<Car>(id).ConfigureAwait(false));
+                await connection.DeleteAllAsync<Car>();
+                Assert.Empty(await connection.GetAllAsync<Car>());
             }
         }
 

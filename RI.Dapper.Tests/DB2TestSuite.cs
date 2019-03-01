@@ -76,7 +76,7 @@ namespace RI.Dapper.Tests
                 dropTable("ObjectZ");
                 run("CREATE  TABLE ObjectZ (Id integer not null, Name varchar(100) not null)");
                 dropTable("GenericType");
-                run("CREATE  TABLE GenericType (Id nvarchar(100) not null, Name varchar(100) not null)");
+                run("CREATE  TABLE GenericTypes (Id nvarchar(100) not null, Name varchar(100) not null)");
                 dropTable("NullableDates");
                 run("CREATE  TABLE NullableDates (Id INTEGER GENERATED ALWAYS AS IDENTITY not null, DateValue date )");
                 dropTable("Article");

@@ -6,11 +6,11 @@ using System.Reflection;
 using System.Transactions;
 using Dapper;
 using Dapper.Contrib.Extensions;
+using Dapper.Contrib.Extensions.Mapping;
 using Xunit;
 
 namespace RI.Dapper.Tests
 {
-
     [Table("Article")]
     public class Article
     {
@@ -19,6 +19,14 @@ namespace RI.Dapper.Tests
         [ExplicitKey]
         public string Code { get; set; }
         public string Name { get; set; }
+
+        public class ArticleMapper : EntityMap<Article>
+        {
+            public ArticleMapper()
+            {
+                ToTable("Article");
+            }
+        }
     }
 
 
@@ -28,6 +36,13 @@ namespace RI.Dapper.Tests
         [ExplicitKey]
         public string ObjectXId { get; set; }
         public string Name { get; set; }
+        public class ObjectXMapper : EntityMap<ObjectX>
+        {
+            public ObjectXMapper()
+            {
+                ToTable("ObjectX");
+            }
+        }
     }
 
     [Table("ObjectY")]
@@ -36,6 +51,13 @@ namespace RI.Dapper.Tests
         [ExplicitKey]
         public int ObjectYId { get; set; }
         public string Name { get; set; }
+        public class ObjectYMapper : EntityMap<ObjectY>
+        {
+            public ObjectYMapper()
+            {
+                ToTable("ObjectY");
+            }
+        }
     }
 
     [Table("ObjectZ")]
@@ -44,6 +66,13 @@ namespace RI.Dapper.Tests
         [ExplicitKey]
         public int Id { get; set; }
         public string Name { get; set; }
+        public class ObjectZMapper : EntityMap<ObjectZ>
+        {
+            public ObjectZMapper()
+            {
+                ToTable("ObjectZ");
+            }
+        }
     }
 
     public interface IUser
@@ -86,18 +115,14 @@ namespace RI.Dapper.Tests
         public int Id { get; set; }
         public string AliasField { get; set; }
 
-        public class AliasMapper : SqlMapperExtensions.EntityMap<AliasedField>
+        public class AliasMapper : EntityMap<AliasedField>
         {
             public AliasMapper()
             {
                 Map(_ => _.AliasField).ToColumn("Field");
                 Map(_ => _.Id).ToColumn("IdRec");
             }
-
-           
         }
-
-
     }
 
     public class Person
@@ -106,25 +131,39 @@ namespace RI.Dapper.Tests
         public string Name { get; set; }
     }
 
-    [Table("Stuff")]
+    
     public class Stuff
     {
         [Key]
         public short TheId { get; set; }
         public string Name { get; set; }
         public DateTime? Created { get; set; }
+        public class StuffMapper : EntityMap<Stuff>
+        {
+            public StuffMapper()
+            {
+                ToTable("Stuff");
+            }
+        }
     }
 
-    [Table("Automobiles")]
+    
     public class Car
     {
         public int Id { get; set; }
         public string Name { get; set; }
         [Computed]
         public string Computed { get; set; }
+        public class CarMapper : EntityMap<Car>
+        {
+            public CarMapper()
+            {
+                ToTable("Automobiles");
+            }
+        }
     }
 
-    [Table("Results")]
+    
     public class Result
     {
         public int Id { get; set; }
@@ -132,7 +171,7 @@ namespace RI.Dapper.Tests
         public int Order { get; set; }
     }
 
-    [Table("GenericType")]
+    
     public class GenericType<T>
     {
         [ExplicitKey]
@@ -145,6 +184,7 @@ namespace RI.Dapper.Tests
         public TestSuite()
         {
             SqlMapperExtensions.InitMapping();
+            
         }
         protected static readonly bool IsAppVeyor = Environment.GetEnvironmentVariable("Appveyor")?.ToUpperInvariant() == "TRUE";
 
@@ -157,6 +197,8 @@ namespace RI.Dapper.Tests
             connection.Open();
             return connection;
         }
+
+
 
         [Fact]
         public void TypeWithGenericParameterCanBeInserted()
@@ -361,6 +403,8 @@ namespace RI.Dapper.Tests
         [Fact]
         public void TableName()
         {
+            
+
             using (var connection = GetOpenConnection())
             {
                 // tests against "Automobiles" table (Table attribute)
@@ -371,8 +415,11 @@ namespace RI.Dapper.Tests
                 Assert.Equal("Volvo", connection.Get<Car>(id).Name);
                 Assert.True(connection.Update(new Car { Id = (int)id, Name = "Saab" }));
                 Assert.Equal("Saab", connection.Get<Car>(id).Name);
+                Assert.NotEmpty(connection.GetAll<Car>());
                 Assert.True(connection.Delete(new Car { Id = (int)id }));
                 Assert.Null(connection.Get<Car>(id));
+                connection.DeleteAll<Car>();
+                Assert.Empty(connection.GetAll<Car>());
             }
         }
 
@@ -564,35 +611,6 @@ namespace RI.Dapper.Tests
             }
         }
 
-
-        [Fact]
-        public void InsertWithCustomTableNameMapper()
-        {
-            SqlMapperExtensions.TableNameMapper = type =>
-            {
-                switch (type.Name)
-                {
-                    case "Person":
-                        return "People";
-                    default:
-                        var tableattr = type.GetCustomAttributes(false).SingleOrDefault(attr => attr.GetType().Name == "TableAttribute") as dynamic;
-                        if (tableattr != null)
-                            return tableattr.Name;
-
-                        var name = type.Name + "s";
-                        if (type.IsInterface && name.StartsWith("I"))
-                            return name.Substring(1);
-                        return name;
-                }
-            };
-
-            using (var connection = GetOpenConnection())
-            {
-                var id = connection.Insert(new Person { Name = "Mr Mapper" });
-                Assert.Equal(1, id);
-                connection.GetAll<Person>();
-            }
-        }
 
         [Fact]
         public void GetAll()
@@ -788,7 +806,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
 
                 connection.DeleteAll<AliasedField>();
                 connection.Execute("insert into AliasedFields (Field) values('Adam') ");
@@ -805,7 +823,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
 
                 connection.DeleteAll<AliasedField>();
 
@@ -821,7 +839,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
                 connection.DeleteAll<AliasedField>();
                 var id = connection.Insert(new AliasedField() { AliasField = "Adam" });
                 var actual = connection.Get<AliasedField>(id);
@@ -835,7 +853,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
                 connection.DeleteAll<AliasedField>();
                 var id = connection.Insert(new AliasedField() { AliasField = "Adam" });
                 var actual = connection.Get<AliasedField>(id);
@@ -856,7 +874,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
                 connection.DeleteAll<AliasedField>();
                 var id = await connection.InsertAsync(new AliasedField() { AliasField = "Adam" });
                 var actual = await connection.GetAsync<AliasedField>(id);
@@ -878,7 +896,7 @@ namespace RI.Dapper.Tests
             using (var connection = GetOpenConnection())
             {
                 SqlMapperExtensions
-                    .RegisterMap(new AliasedField.AliasMapper());
+                    .RegisterMap<AliasedField>(new AliasedField.AliasMapper());
                 connection.DeleteAll<AliasedField>();
                 var id = await connection.InsertAsync(new AliasedField() { AliasField = "Adam" });
                 var actual = await connection.GetAsync<AliasedField>(id);

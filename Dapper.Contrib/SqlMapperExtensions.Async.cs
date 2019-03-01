@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Dapper;
+using Dapper.Contrib.Extensions.Mapping;
 
 namespace Dapper.Contrib.Extensions
 {
@@ -25,15 +26,28 @@ namespace Dapper.Contrib.Extensions
         public static async Task<T> GetAsync<T>(this IDbConnection connection, dynamic id, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
             var key = GetKeys<T>(nameof(GetAsync));
+            var adapter = GetFormatter(connection);
             if (!GetQueries.TryGetValue(type.TypeHandle, out string sql))
             {
                 var name = GetTableName(type);
 
+                var allProperties = TypePropertiesCache(type);
+                var computed = ComputedPropertiesCache(type);
+                var sbColumnList = new StringBuilder();
+
                 var pars = key.Select(k => map.GetColumnName(k));
 
-                sql = $"SELECT * FROM {name} WHERE {BuildWhereCondition(pars)}";
+                allProperties.Except(computed).ToList().ForEach(_ =>
+                {
+                    adapter.AppendColumnName(sbColumnList, map.GetColumnName(_));
+
+                    sbColumnList.Append(",");
+                });
+                sbColumnList = sbColumnList.Remove(sbColumnList.Length - 1, 1);
+
+                sql = $"SELECT {sbColumnList.ToString()} FROM {name} WHERE {BuildWhereCondition(pars)}";
 
                 GetQueries[type.TypeHandle] = sql;
                 GetParameters[type.TypeHandle] = pars;
@@ -94,13 +108,27 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
             var cacheType = typeof(List<T>);
-            
+            var adapter = GetFormatter(connection);
+            var map = GetColumnAliasMap(type);
+
             if (!GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
                 GetSingleKey<T>(nameof(GetAll));
-                var name = GetTableName(type);
 
-                sql = "SELECT * FROM " + name;
+                var sbColumnList = new StringBuilder();
+                var name = GetTableName(type);
+                var allProperties = TypePropertiesCache(type);
+                var computed = ComputedPropertiesCache(type);
+
+                allProperties.Except(computed).ToList().ForEach(_ =>
+                {
+                    adapter.AppendColumnName(sbColumnList, map.GetColumnName(_));
+
+                    sbColumnList.Append(",");
+                });
+                sbColumnList = sbColumnList.Remove(sbColumnList.Length - 1, 1);
+                sql = $"select {sbColumnList.ToString()} from {name}";
+                
                 GetQueries[cacheType.TypeHandle] = sql;
             }
 
@@ -148,12 +176,12 @@ namespace Dapper.Contrib.Extensions
         /// <param name="commandTimeout">Number of seconds before command execution timeout</param>
         /// <param name="sqlAdapter">The specific ISqlAdapter to use, auto-detected based on connection if null</param>
         /// <returns>Identity of inserted entity</returns>
-        public static Task<int> InsertAsync<T>(this IDbConnection connection, T entityToInsert, IDbTransaction transaction = null,
+        public static async Task<int> InsertAsync<T>(this IDbConnection connection, T entityToInsert, IDbTransaction transaction = null,
             int? commandTimeout = null, ISqlAdapter sqlAdapter = null) where T : class
         {
             var type = typeof(T);
             sqlAdapter = sqlAdapter ?? GetFormatter(connection);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
             var isList = false;
             if (type.IsArray)
             {
@@ -200,33 +228,35 @@ namespace Dapper.Contrib.Extensions
 
             if (!isList)    //single entity
             {
-                return sqlAdapter.InsertAsync(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
+                var id = await sqlAdapter.InsertAsync(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
                     sbParameterList.ToString(), keyProperties,
                     RemapObject(keyProperties
                     , allPropertiesExceptKeyAndComputed
-                    , entityToInsert)).ContinueWith(_ =>
-                    {
+                    , entityToInsert));
+                
                         var propertyInfos = keyProperties.ToArray();
-                        if (propertyInfos.Length == 0) return _.Result;
+                        if (propertyInfos.Length == 0) return id;
 
                         var idProperty = propertyInfos[0];
-                        idProperty.SetValue(entityToInsert, Convert.ChangeType(_.Result, idProperty.PropertyType), null);
-                        return _.Result;
-                    });
+                        idProperty.SetValue(entityToInsert, Convert.ChangeType(id, idProperty.PropertyType), null);
+                return id;
+                
             }
 
             //insert list of entities
             var cmd = $"INSERT INTO {name} ({sbColumnList}) values ({sbParameterList})";
-            return connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
+            return await connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
         }
 
-        private static IAliasColumnMap GetMap(Type type)
-        {
-            return ColumnNameMappingDictionary
+        private static IAliasColumnMap GetColumnAliasMap(Type type) => ColumnNameMappingDictionary
                     .FirstOrDefault(_ => _.Key == type)
-                    .Value as IAliasColumnMap 
+                    .Value as IAliasColumnMap
                     ?? new DefaultMap();
-        }
+
+        private static IAliasTableMap GetTableAliasMap(Type type) => ColumnNameMappingDictionary
+                    .FirstOrDefault(_ => _.Key == type)
+                    .Value as IAliasTableMap
+                    ?? new DefaultTableMap(type);
 
         /// <summary>
         /// Updates entity in table "Ts" asynchronously using .NET 4.5 Task, checks if the entity is modified if the entity is tracked by the Get() extension.
@@ -245,7 +275,7 @@ namespace Dapper.Contrib.Extensions
             }
 
             var type = typeof(T);
-            var map = GetMap(type);
+            var map = GetColumnAliasMap(type);
 
             if (type.IsArray)
             {
@@ -356,7 +386,7 @@ namespace Dapper.Contrib.Extensions
             if (keyProperties.Count == 0 && explicitKeyProperties.Count == 0)
                 throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
 
-            var name = GetTableName(type);
+            var name = GetTableAliasMap(type).GetTableMap();
             keyProperties.AddRange(explicitKeyProperties);
 
             var sb = new StringBuilder();
@@ -406,11 +436,13 @@ namespace Dapper.Contrib.Extensions
         public static async Task<bool> DeleteAllAsync<T>(this IDbConnection connection, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var statement = "DELETE FROM " + GetTableName(type);
+            var statement = "DELETE FROM " + GetTableAliasMap(type).GetTableMap(); 
             var deleted = await connection.ExecuteAsync(statement, null, transaction, commandTimeout).ConfigureAwait(false);
             return deleted > 0;
         }
     }
+
+    
 }
 
 public partial interface ISqlAdapter
